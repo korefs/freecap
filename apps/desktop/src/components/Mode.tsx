@@ -23,7 +23,7 @@ const MODE_BUTTONS: ModeButtonConfig[] = [
 		mode: "instant",
 		label: "Instant mode",
 		description:
-			"No rendering required — uploads on the fly so you can share the link the moment you stop.",
+			"No rendering required. Uploads on the fly so you can share the link the moment you stop.",
 		settingsSection: "instant-quality",
 		icon: (p) => <IconCapInstant {...p} />,
 		iconClass: "size-4 invert dark:invert-0",
@@ -32,7 +32,7 @@ const MODE_BUTTONS: ModeButtonConfig[] = [
 		mode: "studio",
 		label: "Studio mode",
 		description:
-			"Records at the highest quality for local rendering later. Opens the Cap editor when you're done.",
+			"Records locally without time limits. Opens the full editor when you're done.",
 		settingsSection: "studio-quality",
 		icon: (p) => <IconCapFilmCut {...p} />,
 		iconClass: "size-[0.9rem] invert dark:invert-0",

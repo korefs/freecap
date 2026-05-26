@@ -14,14 +14,14 @@ const modeOptions = [
 		mode: "instant" as RecordingMode,
 		title: "Instant",
 		description:
-			"Share instantly with a link. Your recording uploads as you record, so you can share it immediately when you're done.",
+			"Create a shareable link as you record. Best when you need a quick cloud link.",
 		icon: IconCapInstant,
 	},
 	{
 		mode: "studio" as RecordingMode,
 		title: "Studio",
 		description:
-			"Record locally in the highest quality for editing later. Perfect for creating polished content with effects and transitions.",
+			"Record locally without time limits, edit with the full editor, then export to MP4 or GIF.",
 		icon: IconCapFilmCut,
 	},
 	{

@@ -48,7 +48,7 @@ function ShareButton() {
 				if (canShare.reason === "upgrade_required") {
 					await commands.showWindow("Upgrade");
 					throw new Error(
-						"Upgrade required to share recordings longer than 5 minutes",
+						"Upgrade required to create shareable links longer than 5 minutes",
 					);
 				}
 			}
@@ -117,7 +117,9 @@ function ShareButton() {
 			} else if (result === "PlanCheckFailed")
 				throw new Error("Failed to verify your subscription status");
 			else if (result === "UpgradeRequired")
-				throw new Error("This feature requires an upgraded plan");
+				throw new Error(
+					"Shareable links longer than 5 minutes require an upgraded plan",
+				);
 
 			setUploadState({ type: "link-copied" });
 

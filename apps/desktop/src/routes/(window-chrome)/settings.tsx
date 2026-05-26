@@ -63,6 +63,11 @@ export default function Settings(props: RouteSectionProps) {
 			icon: IconLucideSquarePlay,
 		},
 		{
+			href: "replay-buffer",
+			name: "Replay Buffer",
+			icon: IconCapInstant,
+		},
+		{
 			href: "screenshots",
 			name: "Screenshots",
 			icon: IconLucideImage,

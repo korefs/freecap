@@ -327,6 +327,10 @@ impl WindowImpl {
         }
     }
 
+    pub fn executable_path(&self) -> Option<String> {
+        None
+    }
+
     pub fn owner_pid(&self) -> Option<i32> {
         let windows =
             core_graphics::window::copy_window_info(kCGWindowListOptionIncludingWindow, self.0)?;

@@ -65,13 +65,13 @@ const ModeSelect = (props: { onClose?: () => void; standalone?: boolean }) => {
 		{
 			mode: "instant" as const,
 			title: "Instant",
-			description: "Share instantly with a link. Uploads as you record.",
+			description: "Create a shareable link as you record.",
 			icon: IconCapInstant,
 		},
 		{
 			mode: "studio" as const,
 			title: "Studio",
-			description: "Highest quality local recording for editing later.",
+			description: "Unlimited local recording with the full editor.",
 			icon: IconCapFilmCut,
 		},
 		{

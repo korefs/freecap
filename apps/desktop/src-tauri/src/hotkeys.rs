@@ -64,6 +64,7 @@ pub enum HotkeyAction {
     ScreenshotDisplay,
     ScreenshotWindow,
     ScreenshotArea,
+    ClipReplayBuffer,
     #[serde(other)]
     Other,
 }
@@ -80,6 +81,33 @@ impl HotkeysStore {
         };
 
         serde_json::from_value(store).map_err(|e| e.to_string())
+    }
+
+    fn with_replay_default(mut self) -> Self {
+        if self.hotkeys.contains_key(&HotkeyAction::ClipReplayBuffer) {
+            return self;
+        }
+
+        let replay_hotkey = Hotkey {
+            code: Code::PageUp,
+            meta: false,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        };
+
+        if !self.hotkeys.values().any(|hotkey| *hotkey == replay_hotkey) {
+            self.hotkeys
+                .insert(HotkeyAction::ClipReplayBuffer, replay_hotkey);
+        }
+
+        self
+    }
+
+    fn save(&self, app: &AppHandle) -> Result<(), String> {
+        let store = app.store("store").map_err(|e| e.to_string())?;
+        store.set("hotkeys", serde_json::json!(self));
+        store.save().map_err(|e| e.to_string())
     }
 }
 
@@ -126,7 +154,12 @@ pub fn init(app: &AppHandle) {
             eprintln!("Failed to load hotkeys store: {e}");
             HotkeysStore::default()
         }
-    };
+    }
+    .with_replay_default();
+
+    if let Err(err) = store.save(app) {
+        eprintln!("Failed to save hotkeys store: {err}");
+    }
 
     let global_shortcut = app.global_shortcut();
     for hotkey in store.hotkeys.values() {
@@ -245,6 +278,10 @@ async fn handle_hotkey(app: AppHandle, action: HotkeyAction) -> Result<(), Strin
                 target_mode: Some(RecordingTargetMode::Area),
             }
             .emit(&app);
+            Ok(())
+        }
+        HotkeyAction::ClipReplayBuffer => {
+            crate::replay_buffer::clip_replay_buffer(app.clone(), app.state()).await?;
             Ok(())
         }
         HotkeyAction::Other => Ok(()),

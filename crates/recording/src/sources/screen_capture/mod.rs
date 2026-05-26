@@ -34,6 +34,7 @@ pub struct CaptureWindow {
     pub bounds: LogicalBounds,
     pub refresh_rate: u32,
     pub bundle_identifier: Option<String>,
+    pub executable_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -486,6 +487,8 @@ pub fn list_windows() -> Vec<(CaptureWindow, Window)> {
             #[cfg(not(target_os = "macos"))]
             let bundle_identifier = None;
 
+            let executable_path = v.executable_path();
+
             let refresh_rate = v
                 .display()
                 .map(|display| validated_refresh_rate(display.raw_handle().refresh_rate()))?;
@@ -498,6 +501,7 @@ pub fn list_windows() -> Vec<(CaptureWindow, Window)> {
                     bounds: v.display_relative_logical_bounds()?,
                     refresh_rate,
                     bundle_identifier,
+                    executable_path,
                 },
                 v,
             ))

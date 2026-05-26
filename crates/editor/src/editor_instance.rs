@@ -274,7 +274,8 @@ impl EditorInstance {
 
         let layers_rx = editor::start_renderer_layers_creation(&render_constants);
 
-        let segments = create_segments(&recording_meta, meta.as_ref(), false).await?;
+        let force_ffmpeg = should_force_ffmpeg_decoder(&recording_meta);
+        let segments = create_segments(&recording_meta, meta.as_ref(), force_ffmpeg).await?;
 
         let renderer = Arc::new(editor::Renderer::spawn(
             render_constants.clone(),
@@ -626,6 +627,14 @@ pub struct SegmentMedia {
     pub cursor: Arc<CursorEvents>,
     pub keyboard: Arc<cap_project::KeyboardEvents>,
     pub decoders: RecordingSegmentDecoders,
+}
+
+fn should_force_ffmpeg_decoder(recording_meta: &RecordingMeta) -> bool {
+    recording_meta
+        .project_path
+        .join(".force-ffmpeg-decoder")
+        .exists()
+        || recording_meta.pretty_name == "Replay Clip"
 }
 
 pub async fn create_segments(

@@ -30,6 +30,7 @@ mod recording;
 mod recording_settings;
 mod recording_telemetry;
 mod recovery;
+mod replay_buffer;
 mod screenshot_editor;
 mod target_select_overlay;
 mod thumbnails;
@@ -4046,6 +4047,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
             check_upgraded_and_update,
             open_external_link,
             hotkeys::set_hotkey,
+            replay_buffer::clip_replay_buffer,
             reset_camera_permissions,
             reset_microphone_permissions,
             clear_presets,
@@ -4132,6 +4134,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
         .typ::<hotkeys::HotkeysStore>()
         .typ::<general_settings::GeneralSettingsStore>()
         .typ::<recording_settings::RecordingSettingsStore>()
+        .typ::<replay_buffer::ReplayBufferSettings>()
         .typ::<cap_flags::Flags>()
         .typ::<crate::window_exclusion::WindowExclusion>();
 
@@ -4366,7 +4369,7 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
                 let camera_preview = CameraPreviewManager::new(&app);
                 let camera_session_id_handle = camera_preview.session_id_handle();
 
-                app.manage(Arc::new(RwLock::new(App {
+                let app_state = Arc::new(RwLock::new(App {
                     camera_ws_port,
                     camera_ws_sender,
                     handle: app.clone(),
@@ -4385,7 +4388,11 @@ pub async fn run(recording_logging_handle: LoggingHandle, logs_dir: PathBuf) {
                     logs_dir: logs_dir.clone(),
                     disconnected_inputs: HashSet::new(),
                     was_camera_only_recording: false,
-                })));
+                }));
+
+                app.manage(app_state.clone());
+                app.manage(replay_buffer::ReplayBufferState::default());
+                replay_buffer::start_manager(app.clone(), app_state);
 
                 app.manage(camera_session_id_handle);
                 app.manage(CameraWindowCloseGate::default());

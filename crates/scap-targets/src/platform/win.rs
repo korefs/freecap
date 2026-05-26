@@ -560,13 +560,13 @@ impl WindowImpl {
             // Target size for acceptable icon quality - early termination threshold
             const GOOD_SIZE_THRESHOLD: i32 = 256;
 
-            if let Some(exe_path) = self.get_executable_path()
+            if let Some(exe_path) = self.executable_path()
                 && let Some(icon_data) = self.extract_shell_icon_high_res(&exe_path, 512)
             {
                 return Some(icon_data);
             }
 
-            if let Some(exe_path) = self.get_executable_path()
+            if let Some(exe_path) = self.executable_path()
                 && let Some(icon_data) = self.extract_executable_icons_high_res(&exe_path)
             {
                 return Some(icon_data);
@@ -588,7 +588,7 @@ impl WindowImpl {
             }
 
             // Method 4: Try executable file extraction (fallback to original method)
-            if let Some(exe_path) = self.get_executable_path() {
+            if let Some(exe_path) = self.executable_path() {
                 let wide_path: Vec<u16> =
                     exe_path.encode_utf16().chain(std::iter::once(0)).collect();
 
@@ -756,7 +756,7 @@ impl WindowImpl {
         }
     }
 
-    fn get_executable_path(&self) -> Option<String> {
+    pub fn executable_path(&self) -> Option<String> {
         unsafe {
             let mut process_id = 0u32;
             GetWindowThreadProcessId(self.0, Some(&mut process_id));

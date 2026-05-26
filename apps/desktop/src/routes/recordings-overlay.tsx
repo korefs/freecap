@@ -736,7 +736,7 @@ function createRecordingMutations(
 				if (canShare.reason === "upgrade_required") {
 					await commands.showWindow("Upgrade");
 					throw new Error(
-						"Upgrade required to share recordings longer than 5 minutes",
+						"Upgrade required to create shareable links longer than 5 minutes",
 					);
 				}
 			}

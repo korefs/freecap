@@ -87,13 +87,13 @@ const modes: ModeDetail[] = [
 		title: "Studio Mode",
 		tagline: "Professional editing tools",
 		description:
-			"Record in full quality locally, then use the built-in editor to add backgrounds, padding, cursor effects, and more.",
+			"Record locally without time limits, then use the full editor to add backgrounds, padding, cursor effects, and more.",
 		icon: IconCapFilmCut,
 		features: [
-			"Full quality local recording",
-			"Built-in editor & effects",
+			"Unlimited local recording",
+			"Full editor & effects",
 			"Custom backgrounds & padding",
-			"Export or share when ready",
+			"Export to MP4 or GIF",
 		],
 	},
 	{
