@@ -2,11 +2,7 @@ use crate::{
     App, MutableState, NewStudioRecordingAdded, RecordingState, audio::AppSounds,
     recording_settings::RecordingSettingsStore,
 };
-use cap_project::{
-    Cursors, MultipleSegment, MultipleSegments, Platform, ProjectConfiguration, RecordingMeta,
-    RecordingMetaInner, StudioRecordingMeta, StudioRecordingStatus, TimelineConfiguration,
-    TimelineSegment, VideoMeta,
-};
+use cap_project::{InstantRecordingMeta, Platform, RecordingMeta, RecordingMetaInner};
 use cap_recording::{
     feeds::microphone,
     instant_recording,
@@ -14,7 +10,6 @@ use cap_recording::{
 };
 use cap_utils::ensure_dir;
 use kameo::actor::ActorRef;
-use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::{
@@ -94,7 +89,6 @@ struct ReplayTargetKey {
 #[derive(Debug, Clone)]
 struct SegmentRecord {
     path: PathBuf,
-    index: u32,
     start: f64,
     end: f64,
 }
@@ -136,7 +130,6 @@ impl SegmentTracker {
         let end = start + event.duration.max(0.0);
         segments.push(SegmentRecord {
             path: event.path,
-            index: event.index,
             start,
             end,
         });
@@ -309,12 +302,20 @@ async fn start_session(
         .ok()
         .flatten()
         .unwrap_or_default();
+    let persisted_mic_label = settings.mic_name.clone();
     let (mic_feed, selected_label, selected_settings) = {
         let app_state = state.read().await;
+        let selected_label = app_state
+            .selected_mic_label
+            .clone()
+            .or_else(|| persisted_mic_label.clone());
+        let selected_settings = selected_label
+            .as_deref()
+            .and_then(|label| app_state.microphone_settings_for_label(label));
         (
             app_state.mic_feed.clone(),
-            app_state.selected_mic_label.clone(),
-            selected_label_settings(&app_state),
+            selected_label,
+            selected_settings,
         )
     };
     let mic_feed = lock_selected_microphone(&mic_feed, selected_label, selected_settings).await?;
@@ -357,13 +358,6 @@ async fn start_session(
         tracker,
         bridge,
     })
-}
-
-fn selected_label_settings(app_state: &App) -> Option<microphone::MicrophoneDeviceSettings> {
-    app_state
-        .selected_mic_label
-        .as_deref()
-        .and_then(|label| app_state.microphone_settings_for_label(label))
 }
 
 async fn lock_selected_microphone(
@@ -504,6 +498,7 @@ struct ClipSelection {
     video_segments: Vec<SegmentRecord>,
     audio_segments: Vec<SegmentRecord>,
     duration: f64,
+    audio_offset_secs: f64,
     protected_paths: Vec<PathBuf>,
 }
 
@@ -522,14 +517,10 @@ fn select_clip_segments(snapshot: &SegmentSnapshot, requested_secs: f64) -> Opti
 
     let first_start = video_segments.first().map(|s| s.start).unwrap_or(0.0);
     let duration = latest - first_start;
-    let indices = video_segments
-        .iter()
-        .map(|s| s.index)
-        .collect::<HashSet<_>>();
     let audio_segments = snapshot
         .audio_segments
         .iter()
-        .filter(|segment| indices.contains(&segment.index))
+        .filter(|segment| segment.end > first_start && segment.start < latest)
         .cloned()
         .collect::<Vec<_>>();
 
@@ -537,6 +528,10 @@ fn select_clip_segments(snapshot: &SegmentSnapshot, requested_secs: f64) -> Opti
     let audio_init = (!audio_segments.is_empty())
         .then(|| snapshot.audio_init.clone())
         .flatten();
+    let audio_offset_secs = audio_segments
+        .first()
+        .map(|segment| segment.start - first_start)
+        .unwrap_or(0.0);
     let mut protected_paths = Vec::with_capacity(
         1 + usize::from(audio_init.is_some()) + video_segments.len() + audio_segments.len(),
     );
@@ -553,6 +548,7 @@ fn select_clip_segments(snapshot: &SegmentSnapshot, requested_secs: f64) -> Opti
         video_segments,
         audio_segments,
         duration,
+        audio_offset_secs,
         protected_paths,
     })
 }
@@ -585,7 +581,7 @@ async fn materialize_clip(app: &AppHandle, selection: ClipSelection) -> Result<P
         let video_segments = video_segments.clone();
         let video_temp = video_temp.clone();
         move || {
-            cap_enc_ffmpeg::remux::concatenate_m4s_segments_with_init(
+            cap_enc_ffmpeg::remux::concatenate_m4s_segments_with_init_reset_timestamps(
                 &video_init,
                 &video_segments,
                 &video_temp,
@@ -607,7 +603,7 @@ async fn materialize_clip(app: &AppHandle, selection: ClipSelection) -> Result<P
             tokio::task::spawn_blocking({
                 let audio_temp = audio_temp.clone();
                 move || {
-                    cap_enc_ffmpeg::remux::concatenate_m4s_segments_with_init(
+                    cap_enc_ffmpeg::remux::concatenate_m4s_segments_with_init_reset_timestamps(
                         &audio_init,
                         &audio_segments,
                         &audio_temp,
@@ -625,25 +621,45 @@ async fn materialize_clip(app: &AppHandle, selection: ClipSelection) -> Result<P
         None
     };
 
-    if let Some(audio_path) = audio_path {
-        tokio::task::spawn_blocking({
-            let video_temp = video_temp.clone();
-            let display_path = display_path.clone();
-            move || {
-                cap_enc_ffmpeg::remux::merge_video_audio(&video_temp, &audio_path, &display_path)
-            }
-        })
-        .await
-        .map_err(|e| format!("Replay clip merge task failed: {e}"))?
-        .map_err(|e| format!("Failed to merge replay clip audio: {e}"))?;
+    let has_audio = audio_path.is_some();
+    if has_audio {
+        tokio::fs::copy(&video_temp, &display_path)
+            .await
+            .map_err(|e| format!("Failed to copy replay display video output: {e}"))?;
     } else {
         tokio::fs::rename(&video_temp, &display_path)
             .await
             .map_err(|e| format!("Failed to move replay video output: {e}"))?;
     }
 
-    if let Err(err) = tokio::fs::copy(&display_path, &output_path).await {
-        warn!("Failed to copy replay clip compatibility output: {err}");
+    if let Some(audio_path) = audio_path {
+        tokio::task::spawn_blocking({
+            let video_temp = video_temp.clone();
+            let audio_path_for_merge = audio_path.clone();
+            let output_path = output_path.clone();
+            let audio_offset_secs = selection.audio_offset_secs;
+            let duration = selection.duration;
+            move || {
+                cap_enc_ffmpeg::remux::merge_video_audio_reset_timestamps_with_audio_offset(
+                    &video_temp,
+                    &audio_path_for_merge,
+                    &output_path,
+                    audio_offset_secs,
+                    duration,
+                )
+            }
+        })
+        .await
+        .map_err(|e| format!("Replay clip output merge task failed: {e}"))?
+        .map_err(|e| format!("Failed to merge replay clip output audio: {e}"))?;
+        if let Err(err) = tokio::fs::remove_file(&audio_path).await {
+            warn!("Failed to remove replay clip temporary audio: {err}");
+        }
+        if let Err(err) = tokio::fs::remove_file(&video_temp).await {
+            warn!("Failed to remove replay clip temporary video: {err}");
+        }
+    } else if let Err(err) = tokio::fs::copy(&display_path, &output_path).await {
+        warn!("Failed to copy replay clip output: {err}");
     }
     tokio::fs::write(recording_dir.join(".force-ffmpeg-decoder"), b"")
         .await
@@ -655,54 +671,19 @@ async fn materialize_clip(app: &AppHandle, selection: ClipSelection) -> Result<P
         warn!("Failed to create replay clip thumbnail: {err}");
     }
 
-    let relative_display = RelativePathBuf::from("content/segments/segment-0/display.mp4");
     let meta = RecordingMeta {
         platform: Some(Platform::default()),
         project_path: recording_dir.clone(),
         pretty_name: "Replay Clip".to_string(),
         sharing: None,
-        inner: RecordingMetaInner::Studio(Box::new(StudioRecordingMeta::MultipleSegments {
-            inner: MultipleSegments {
-                segments: vec![MultipleSegment {
-                    display: VideoMeta {
-                        path: relative_display,
-                        fps: 30,
-                        start_time: Some(0.0),
-                        device_id: None,
-                    },
-                    camera: None,
-                    mic: None,
-                    system_audio: None,
-                    cursor: None,
-                    keyboard: None,
-                }],
-                cursors: Cursors::default(),
-                status: Some(StudioRecordingStatus::Complete),
-            },
-        })),
+        inner: RecordingMetaInner::Instant(InstantRecordingMeta::Complete {
+            fps: 30,
+            sample_rate: has_audio.then_some(48_000),
+        }),
         upload: None,
     };
     meta.save_for_project()
         .map_err(|e| format!("Failed to save replay clip metadata: {e}"))?;
-
-    let mut config = ProjectConfiguration::default();
-    config.timeline = Some(TimelineConfiguration {
-        segments: vec![TimelineSegment {
-            recording_clip: 0,
-            timescale: 1.0,
-            start: 0.0,
-            end: selection.duration,
-        }],
-        zoom_segments: Vec::new(),
-        scene_segments: Vec::new(),
-        mask_segments: Vec::new(),
-        text_segments: Vec::new(),
-        caption_segments: Vec::new(),
-        keyboard_segments: Vec::new(),
-    });
-    config
-        .write(&recording_dir)
-        .map_err(|e| format!("Failed to save replay clip config: {e}"))?;
 
     Ok(recording_dir)
 }
@@ -714,7 +695,6 @@ mod tests {
     fn segment(index: u32, start: f64, end: f64) -> SegmentRecord {
         SegmentRecord {
             path: PathBuf::from(format!("segment_{index:03}.m4s")),
-            index,
             start,
             end,
         }
@@ -782,8 +762,49 @@ mod tests {
 
         let selected = select_clip_segments(&snapshot, 3.0).unwrap();
 
-        assert_eq!(selected.video_segments.first().unwrap().index, 3);
+        assert_eq!(
+            selected
+                .video_segments
+                .first()
+                .unwrap()
+                .path
+                .file_name()
+                .unwrap(),
+            "segment_003.m4s"
+        );
         assert!(selected.duration >= 3.0);
+    }
+
+    #[test]
+    fn select_clip_uses_time_overlap_for_audio_segments() {
+        let snapshot = SegmentSnapshot {
+            video_init: Some(PathBuf::from("video_init.mp4")),
+            audio_init: Some(PathBuf::from("audio_init.mp4")),
+            video_segments: vec![
+                segment(10, 0.0, 2.0),
+                segment(11, 2.0, 4.0),
+                segment(12, 4.0, 6.0),
+                segment(13, 6.0, 8.0),
+            ],
+            audio_segments: vec![
+                segment(1, 0.0, 3.0),
+                segment(2, 3.0, 6.0),
+                segment(3, 6.0, 9.0),
+            ],
+        };
+
+        let selected = select_clip_segments(&snapshot, 4.0).unwrap();
+
+        assert_eq!(
+            selected
+                .audio_segments
+                .iter()
+                .filter_map(|segment| segment.path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["segment_002.m4s", "segment_003.m4s"]
+        );
+        assert!(selected.audio_init.is_some());
     }
 
     #[test]

@@ -123,6 +123,7 @@ pub struct ProjectRecordingsMeta {
 
 impl ProjectRecordingsMeta {
     pub fn new(recording_path: &PathBuf, meta: &StudioRecordingMeta) -> Result<Self, String> {
+        let replay_audio_fallback = recording_path.join(".force-ffmpeg-decoder").exists();
         let segments = match &meta {
             StudioRecordingMeta::SingleSegment { segment: s } => {
                 let display = Video::new(s.display.path.to_path(recording_path), 0.0)
@@ -182,7 +183,7 @@ impl ProjectRecordingsMeta {
                         })
                     };
 
-                    let system_audio = match Option::map(s.system_audio.as_ref(), load_audio)
+                    let mut system_audio = match Option::map(s.system_audio.as_ref(), load_audio)
                         .transpose()
                     {
                         Ok(audio) => audio,
@@ -193,6 +194,23 @@ impl ProjectRecordingsMeta {
                             None
                         }
                     };
+
+                    if system_audio.is_none() && s.mic.is_none() && replay_audio_fallback {
+                        let fallback_audio = AudioMeta {
+                            path: s.display.path.clone(),
+                            start_time: s.display.start_time,
+                            device_id: None,
+                        };
+                        system_audio = match load_audio(&fallback_audio) {
+                            Ok(audio) => Some(audio),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to load replay fallback audio from display video: {e}"
+                                );
+                                None
+                            }
+                        };
+                    }
 
                     Ok::<_, String>(SegmentRecordings {
                         display: load_video(&s.display).map_err(|e| format!("video / {e}"))?,

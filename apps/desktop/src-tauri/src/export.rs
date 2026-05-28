@@ -655,8 +655,18 @@ fn is_frame_decode_error(error: &str) -> bool {
         || error.contains("waiting for frame 0")
 }
 
-fn should_force_ffmpeg_export(_project_path: &Path, settings: &ExportSettings) -> bool {
-    settings.force_ffmpeg_decoder()
+fn project_prefers_ffmpeg_decoder(project_path: &Path) -> bool {
+    if project_path.join(".force-ffmpeg-decoder").exists() {
+        return true;
+    }
+
+    RecordingMeta::load_for_project(project_path)
+        .map(|meta| meta.pretty_name == "Replay Clip")
+        .unwrap_or(false)
+}
+
+fn should_force_ffmpeg_export(project_path: &Path, settings: &ExportSettings) -> bool {
+    settings.force_ffmpeg_decoder() || project_prefers_ffmpeg_decoder(project_path)
 }
 
 fn should_use_out_of_process_export() -> bool {
@@ -1058,7 +1068,7 @@ async fn generate_export_preview_inner(
         .map_err(|e| format!("Failed to create render constants: {e}"))?,
     );
 
-    let force_ffmpeg = false;
+    let force_ffmpeg = project_prefers_ffmpeg_decoder(&project_path);
     info!(
         project_path = %project_path.display(),
         force_ffmpeg,

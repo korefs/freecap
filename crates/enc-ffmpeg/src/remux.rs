@@ -129,6 +129,14 @@ fn remux_streams(
     ictx: &mut avformat::context::Input,
     octx: &mut avformat::context::Output,
 ) -> Result<(), RemuxError> {
+    remux_streams_with_timestamp_reset(ictx, octx, false)
+}
+
+fn remux_streams_with_timestamp_reset(
+    ictx: &mut avformat::context::Input,
+    octx: &mut avformat::context::Output,
+    reset_timestamps: bool,
+) -> Result<(), RemuxError> {
     let mut stream_mapping: Vec<Option<usize>> = Vec::new();
     let mut output_stream_index = 0usize;
 
@@ -154,6 +162,7 @@ fn remux_streams(
 
     let mut last_dts: Vec<i64> = vec![i64::MIN; output_stream_index];
     let mut dts_offset: Vec<i64> = vec![0; output_stream_index];
+    let mut first_dts: Vec<Option<i64>> = vec![None; output_stream_index];
 
     for (input_stream, packet) in ictx.packets() {
         let input_stream_index = input_stream.index();
@@ -167,13 +176,21 @@ fn remux_streams(
             packet.rescale_ts(input_time_base, output_time_base);
 
             let current_dts = packet.dts().unwrap_or(0);
+            let base_dts = if reset_timestamps {
+                *first_dts[output_index].get_or_insert(current_dts)
+            } else {
+                0
+            };
 
-            if last_dts[output_index] != i64::MIN && current_dts <= last_dts[output_index] {
-                dts_offset[output_index] = last_dts[output_index] - current_dts + 1;
+            let mut adjusted_dts = current_dts.saturating_sub(base_dts).max(0);
+            let mut adjusted_pts = packet.pts().map(|pts| pts.saturating_sub(base_dts).max(0));
+
+            if last_dts[output_index] != i64::MIN && adjusted_dts <= last_dts[output_index] {
+                dts_offset[output_index] = last_dts[output_index] - adjusted_dts + 1;
             }
 
-            let adjusted_dts = current_dts + dts_offset[output_index];
-            let adjusted_pts = packet.pts().map(|pts| pts + dts_offset[output_index]);
+            adjusted_dts += dts_offset[output_index];
+            adjusted_pts = adjusted_pts.map(|pts| pts + dts_offset[output_index]);
 
             unsafe {
                 (*packet.as_mut_ptr()).dts = adjusted_dts;
@@ -612,6 +629,15 @@ pub fn concatenate_m4s_segments_with_init(
     segments: &[PathBuf],
     output: &Path,
 ) -> Result<(), RemuxError> {
+    concatenate_m4s_segments_with_init_inner(init_path, segments, output, false)
+}
+
+fn concatenate_m4s_segments_with_init_inner(
+    init_path: &Path,
+    segments: &[PathBuf],
+    output: &Path,
+    reset_timestamps: bool,
+) -> Result<(), RemuxError> {
     if segments.is_empty() {
         return Err(RemuxError::NoFragments);
     }
@@ -640,7 +666,11 @@ pub fn concatenate_m4s_segments_with_init(
         combined_file.sync_all()?;
     }
 
-    let result = remux_to_regular_mp4(&combined_path, output);
+    let result = if reset_timestamps {
+        remux_to_regular_mp4_reset_timestamps(&combined_path, output)
+    } else {
+        remux_to_regular_mp4(&combined_path, output)
+    };
 
     if let Err(e) = std::fs::remove_file(&combined_path) {
         tracing::warn!(
@@ -660,8 +690,26 @@ fn remux_to_regular_mp4(input_path: &Path, output_path: &Path) -> Result<(), Rem
     remux_streams(&mut ictx, &mut octx)
 }
 
+fn remux_to_regular_mp4_reset_timestamps(
+    input_path: &Path,
+    output_path: &Path,
+) -> Result<(), RemuxError> {
+    let mut ictx = avformat::input(input_path)?;
+    let mut octx = avformat::output(output_path)?;
+
+    remux_streams_with_timestamp_reset(&mut ictx, &mut octx, true)
+}
+
 pub fn remux_file(input_path: &Path, output_path: &Path) -> Result<(), RemuxError> {
     remux_to_regular_mp4(input_path, output_path)
+}
+
+pub fn concatenate_m4s_segments_with_init_reset_timestamps(
+    init_path: &Path,
+    segments: &[PathBuf],
+    output: &Path,
+) -> Result<(), RemuxError> {
+    concatenate_m4s_segments_with_init_inner(init_path, segments, output, true)
 }
 
 pub fn merge_video_audio(
@@ -670,7 +718,38 @@ pub fn merge_video_audio(
     output_path: &Path,
 ) -> Result<(), RemuxError> {
     suppress_ffmpeg_logs();
-    let result = merge_video_audio_inner(video_path, audio_path, output_path);
+    let result = merge_video_audio_inner(video_path, audio_path, output_path, false, 0.0, None);
+    restore_ffmpeg_logs();
+    result
+}
+
+pub fn merge_video_audio_reset_timestamps(
+    video_path: &Path,
+    audio_path: &Path,
+    output_path: &Path,
+) -> Result<(), RemuxError> {
+    suppress_ffmpeg_logs();
+    let result = merge_video_audio_inner(video_path, audio_path, output_path, true, 0.0, None);
+    restore_ffmpeg_logs();
+    result
+}
+
+pub fn merge_video_audio_reset_timestamps_with_audio_offset(
+    video_path: &Path,
+    audio_path: &Path,
+    output_path: &Path,
+    audio_offset_secs: f64,
+    max_duration_secs: f64,
+) -> Result<(), RemuxError> {
+    suppress_ffmpeg_logs();
+    let result = merge_video_audio_inner(
+        video_path,
+        audio_path,
+        output_path,
+        true,
+        audio_offset_secs,
+        Some(max_duration_secs),
+    );
     restore_ffmpeg_logs();
     result
 }
@@ -679,6 +758,9 @@ fn merge_video_audio_inner(
     video_path: &Path,
     audio_path: &Path,
     output_path: &Path,
+    reset_timestamps: bool,
+    audio_offset_secs: f64,
+    max_duration_secs: Option<f64>,
 ) -> Result<(), RemuxError> {
     let mut video_ctx = avformat::input(video_path)?;
     let mut audio_ctx = avformat::input(audio_path)?;
@@ -719,6 +801,7 @@ fn merge_video_audio_inner(
     octx.write_header()?;
 
     let mut last_dts: Vec<i64> = vec![i64::MIN; out_idx];
+    let mut first_dts: Vec<Option<i64>> = vec![None; out_idx];
 
     for (stream, packet) in video_ctx.packets() {
         if let Some(Some(oidx)) = video_stream_map.get(stream.index()) {
@@ -726,19 +809,15 @@ fn merge_video_audio_inner(
             let mut packet = packet;
             packet.rescale_ts(stream.time_base(), octx.stream(oidx).unwrap().time_base());
 
-            let dts = packet.dts().unwrap_or(0);
-            if last_dts[oidx] != i64::MIN && dts <= last_dts[oidx] {
-                let fixed = last_dts[oidx] + 1;
-                unsafe {
-                    (*packet.as_mut_ptr()).dts = fixed;
-                    if let Some(pts) = packet.pts()
-                        && pts <= fixed
-                    {
-                        (*packet.as_mut_ptr()).pts = fixed;
-                    }
-                }
-            }
-            last_dts[oidx] = packet.dts().unwrap_or(0);
+            normalize_packet_timestamps(
+                &mut packet,
+                oidx,
+                reset_timestamps,
+                &mut first_dts,
+                &mut last_dts,
+                0,
+                None,
+            );
 
             packet.set_stream(oidx);
             packet.set_position(-1);
@@ -750,21 +829,23 @@ fn merge_video_audio_inner(
         if let Some(Some(oidx)) = audio_stream_map.get(stream.index()) {
             let oidx = *oidx;
             let mut packet = packet;
-            packet.rescale_ts(stream.time_base(), octx.stream(oidx).unwrap().time_base());
+            let output_time_base = octx.stream(oidx).unwrap().time_base();
+            packet.rescale_ts(stream.time_base(), output_time_base);
 
-            let dts = packet.dts().unwrap_or(0);
-            if last_dts[oidx] != i64::MIN && dts <= last_dts[oidx] {
-                let fixed = last_dts[oidx] + 1;
-                unsafe {
-                    (*packet.as_mut_ptr()).dts = fixed;
-                    if let Some(pts) = packet.pts()
-                        && pts <= fixed
-                    {
-                        (*packet.as_mut_ptr()).pts = fixed;
-                    }
-                }
+            let audio_offset = seconds_to_timestamp(audio_offset_secs, output_time_base);
+            let max_timestamp =
+                max_duration_secs.map(|duration| seconds_to_timestamp(duration, output_time_base));
+            if !normalize_packet_timestamps(
+                &mut packet,
+                oidx,
+                reset_timestamps,
+                &mut first_dts,
+                &mut last_dts,
+                audio_offset,
+                max_timestamp,
+            ) {
+                continue;
             }
-            last_dts[oidx] = packet.dts().unwrap_or(0);
 
             packet.set_stream(oidx);
             packet.set_position(-1);
@@ -774,6 +855,57 @@ fn merge_video_audio_inner(
 
     octx.write_trailer()?;
     Ok(())
+}
+
+fn seconds_to_timestamp(seconds: f64, time_base: ffmpeg::Rational) -> i64 {
+    let units = seconds * time_base.denominator() as f64 / time_base.numerator() as f64;
+    units.round() as i64
+}
+
+fn normalize_packet_timestamps(
+    packet: &mut ffmpeg::Packet,
+    output_index: usize,
+    reset_timestamps: bool,
+    first_dts: &mut [Option<i64>],
+    last_dts: &mut [i64],
+    timestamp_offset: i64,
+    max_timestamp: Option<i64>,
+) -> bool {
+    let current_dts = packet.dts().unwrap_or(0);
+    let base_dts = if reset_timestamps {
+        *first_dts[output_index].get_or_insert(current_dts)
+    } else {
+        0
+    };
+    let mut adjusted_dts = current_dts.saturating_sub(base_dts).max(0);
+    let mut adjusted_pts = packet.pts().map(|pts| pts.saturating_sub(base_dts).max(0));
+
+    if last_dts[output_index] != i64::MIN && adjusted_dts <= last_dts[output_index] {
+        let fixed_offset = last_dts[output_index] - adjusted_dts + 1;
+        adjusted_dts += fixed_offset;
+        adjusted_pts = adjusted_pts.map(|pts| pts + fixed_offset);
+    }
+
+    adjusted_dts += timestamp_offset;
+    adjusted_pts = adjusted_pts.map(|pts| pts + timestamp_offset);
+
+    if adjusted_dts < 0 {
+        return false;
+    }
+    if let Some(max_timestamp) = max_timestamp
+        && adjusted_dts > max_timestamp
+    {
+        return false;
+    }
+
+    unsafe {
+        (*packet.as_mut_ptr()).dts = adjusted_dts;
+        if let Some(pts) = adjusted_pts {
+            (*packet.as_mut_ptr()).pts = pts;
+        }
+    }
+    last_dts[output_index] = adjusted_dts;
+    true
 }
 
 #[cfg(test)]

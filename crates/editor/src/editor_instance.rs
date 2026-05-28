@@ -709,7 +709,7 @@ pub async fn create_segments(
                     .transpose()?
                     .map(Arc::new);
 
-                let system_audio = s
+                let mut system_audio = s
                     .system_audio
                     .as_ref()
                     .map(|audio| {
@@ -718,6 +718,20 @@ pub async fn create_segments(
                     })
                     .transpose()?
                     .map(Arc::new);
+
+                if system_audio.is_none()
+                    && s.mic.is_none()
+                    && should_force_ffmpeg_decoder(recording_meta)
+                {
+                    system_audio = match AudioData::from_file(recording_meta.path(&s.display.path))
+                    {
+                        Ok(audio) => Some(Arc::new(audio)),
+                        Err(e) => {
+                            warn!("Failed to load replay fallback audio from display video: {e}");
+                            None
+                        }
+                    };
+                }
 
                 let cursor = Arc::new(s.cursor_events(recording_meta));
 

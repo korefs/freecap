@@ -2673,8 +2673,26 @@ async fn copy_video_to_clipboard(
     clipboard: MutableState<'_, ClipboardContext>,
     path: String,
 ) -> Result<(), String> {
-    println!("copying");
-    let _ = clipboard.write().await.set_files(vec![path]);
+    let path = PathBuf::from(path);
+    let copy_path = if path.is_dir() {
+        RecordingMeta::load_for_project(&path)
+            .map(|meta| meta.output_path())
+            .or_else(|_| {
+                let fallback = path.join("content/output.mp4");
+                fallback.is_file().then_some(fallback).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "output.mp4 not found")
+                })
+            })
+            .map_err(|e| format!("Failed to resolve recording output: {e}"))?
+    } else {
+        path
+    };
+
+    clipboard
+        .write()
+        .await
+        .set_files(vec![copy_path.to_string_lossy().into_owned()])
+        .map_err(|e| format!("Failed to copy video to clipboard: {e}"))?;
 
     notifications::send_notification(
         &app,
@@ -2688,6 +2706,7 @@ async fn copy_video_to_clipboard(
 #[instrument]
 async fn get_video_metadata(path: PathBuf) -> Result<VideoRecordingMetadata, String> {
     let recording_meta = RecordingMeta::load_for_project(&path).map_err(|v| v.to_string())?;
+    let project_config = recording_meta.project_config();
 
     fn get_duration_for_path(path: PathBuf) -> Result<f64, String> {
         let input =
@@ -2729,13 +2748,17 @@ async fn get_video_metadata(path: PathBuf) -> Result<VideoRecordingMetadata, Str
         }
     };
 
-    let duration = display_paths
-        .into_iter()
-        .map(get_duration_for_path)
-        .try_fold(0f64, |acc, item| -> Result<f64, String> {
-            let d = item?;
-            Ok(acc + d)
-        })?;
+    let duration = if let Some(timeline) = &project_config.timeline {
+        timeline.segments.iter().map(|s| s.duration()).sum()
+    } else {
+        display_paths
+            .into_iter()
+            .map(get_duration_for_path)
+            .try_fold(0f64, |acc, item| -> Result<f64, String> {
+                let d = item?;
+                Ok(acc + d)
+            })?
+    };
 
     let (width, height) = (1920, 1080);
     let fps = 30;
@@ -3218,10 +3241,16 @@ pub struct RecordingMetaWithMetadata {
 
 impl RecordingMetaWithMetadata {
     fn new(inner: RecordingMeta) -> Self {
+        let replay_clip_output =
+            inner.pretty_name == "Replay Clip" && inner.output_path().is_file();
         Self {
-            mode: match &inner.inner {
-                RecordingMetaInner::Studio(_) => RecordingMode::Studio,
-                RecordingMetaInner::Instant(_) => RecordingMode::Instant,
+            mode: if replay_clip_output {
+                RecordingMode::Instant
+            } else {
+                match &inner.inner {
+                    RecordingMetaInner::Studio(_) => RecordingMode::Studio,
+                    RecordingMetaInner::Instant(_) => RecordingMode::Instant,
+                }
             },
             status: match &inner.inner {
                 RecordingMetaInner::Studio(meta) => match &**meta {

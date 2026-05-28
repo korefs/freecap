@@ -33,7 +33,9 @@ import {
 	type RecordingMetaWithMetadata,
 	type UploadProgress,
 } from "~/utils/tauri";
+import IconLucideCopy from "~icons/lucide/copy";
 import IconLucideImport from "~icons/lucide/import";
+import IconLucideScissors from "~icons/lucide/scissors";
 import IconLucideSearch from "~icons/lucide/search";
 import { Section, SettingsPageContent } from "./Setting";
 
@@ -48,6 +50,11 @@ const Tabs = [
 	{
 		id: "all",
 		label: "Show all",
+	},
+	{
+		id: "clips",
+		icon: <IconLucideScissors class="size-3" />,
+		label: "Clips",
 	},
 	{
 		id: "instant",
@@ -71,6 +78,9 @@ const hasActiveRecording = (recording: Recording) => {
 		uploadState === "MultipartUpload" || uploadState === "SinglePartUpload"
 	);
 };
+
+const isReplayClip = (recording: Recording) =>
+	recording.meta.pretty_name === "Replay Clip";
 
 const recordingsQuery = queryOptions<Recording[]>({
 	queryKey: ["recordings"],
@@ -140,7 +150,9 @@ export default function Recordings() {
 		const scopedRecordings =
 			activeTab() === "all"
 				? data
-				: data.filter((recording) => recording.meta.mode === activeTab());
+				: activeTab() === "clips"
+					? data.filter(isReplayClip)
+					: data.filter((recording) => recording.meta.mode === activeTab());
 		const query = normalizedSearch();
 		if (!query) return scopedRecordings;
 		return scopedRecordings.filter((recording) =>
@@ -160,7 +172,11 @@ export default function Recordings() {
 
 	const emptyMessage = createMemo(() => {
 		const tabLabel =
-			activeTab() === "all" ? "recordings" : `${activeTab()} recordings`;
+			activeTab() === "all"
+				? "recordings"
+				: activeTab() === "clips"
+					? "clips"
+					: `${activeTab()} recordings`;
 		const prefix = trimmedSearch() ? "No matching" : "No";
 		return `${prefix} ${tabLabel}`;
 	});
@@ -179,7 +195,9 @@ export default function Recordings() {
 
 	const handleCopyVideoToClipboard = (path: string) => {
 		trackEvent("recording_copy_clicked");
-		commands.copyVideoToClipboard(path);
+		commands.copyVideoToClipboard(path).catch((error) => {
+			console.error("Failed to copy recording:", error);
+		});
 	};
 
 	const handleOpenEditor = (path: string) => {
@@ -330,8 +348,9 @@ function RecordingItem(props: {
 }) {
 	const [imageExists, setImageExists] = createSignal(true);
 	const mode = () => props.recording.meta.mode;
+	const isClip = () => isReplayClip(props.recording);
 	const firstLetterUpperCase = () =>
-		mode().charAt(0).toUpperCase() + mode().slice(1);
+		isClip() ? "Clip" : mode().charAt(0).toUpperCase() + mode().slice(1);
 
 	const queryClient = useQueryClient();
 	const studioCompleteCheck = () =>
@@ -340,13 +359,13 @@ function RecordingItem(props: {
 	return (
 		<li
 			onClick={() => {
-				if (studioCompleteCheck()) {
+				if (!isClip() && studioCompleteCheck()) {
 					props.onOpenEditor();
 				}
 			}}
 			class={cx(
 				"flex flex-row justify-between p-3 not-last:border-b not-last:border-gray-3 items-center w-full  transition-colors duration-200",
-				studioCompleteCheck()
+				!isClip() && studioCompleteCheck()
 					? "cursor-pointer hover:bg-gray-3"
 					: "cursor-default",
 			)}
@@ -371,10 +390,16 @@ function RecordingItem(props: {
 						<div
 							class={cx(
 								"px-2 py-0.5 flex items-center gap-1.5 font-medium text-[11px] text-gray-12 rounded-full w-fit",
-								mode() === "instant" ? "bg-blue-100" : "bg-gray-4",
+								isClip()
+									? "bg-gray-5"
+									: mode() === "instant"
+										? "bg-blue-100"
+										: "bg-gray-4",
 							)}
 						>
-							{mode() === "instant" ? (
+							{isClip() ? (
+								<IconLucideScissors class="size-2.5" />
+							) : mode() === "instant" ? (
 								<IconCapInstant class="invert size-2.5 dark:invert-0" />
 							) : (
 								<IconCapFilmCut class="invert size-2.5 dark:invert-0" />
@@ -417,7 +442,7 @@ function RecordingItem(props: {
 				</div>
 			</div>
 			<div class="flex gap-2 items-center">
-				<Show when={mode() === "studio"}>
+				<Show when={mode() === "studio" && !isClip()}>
 					<Show when={props.uploadProgress}>
 						<CapTooltip content={`${(props.uploadProgress || 0).toFixed(2)}%`}>
 							<ProgressCircle
@@ -458,7 +483,7 @@ function RecordingItem(props: {
 						<IconLucideEdit class="size-4" />
 					</TooltipIconButton>
 				</Show>
-				<Show when={mode() === "instant"}>
+				<Show when={mode() === "instant" && !isClip()}>
 					{(_) => {
 						const reupload = createMutation(() => ({
 							mutationFn: () =>
@@ -503,6 +528,14 @@ function RecordingItem(props: {
 							</>
 						);
 					}}
+				</Show>
+				<Show when={isClip()}>
+					<TooltipIconButton
+						tooltipText="Copy clip"
+						onClick={() => props.onCopyVideoToClipboard()}
+					>
+						<IconLucideCopy class="size-4" />
+					</TooltipIconButton>
 				</Show>
 				<TooltipIconButton
 					tooltipText="Open recording bundle"
